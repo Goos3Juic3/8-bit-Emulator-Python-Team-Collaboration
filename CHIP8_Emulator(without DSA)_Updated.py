@@ -70,214 +70,221 @@ class cpu(pyglet.window.Window):
 
 
     #Create a dictionary that maps opcode prefixes to methods.
-    def setup_funcmap(self):
-        self.funcmap = {
-            0x0000: self.op_0xxx,
-            0x1000: self.op_1nnn,
-            0x2000: self.op_2nnn,
-            0x3000: self.op_3xkk,
-            0x4000: self.op_4xkk,
-            0x5000: self.op_5xy0,
-            0x6000: self.op_6xkk,
-            0x7000: self.op_7xkk,
-            0x8000: self.op_8xyx,
-            0x9000: self.op_9xy0,
-            0xA000: self.op_annn,
-            0xB000: self.op_bnnn,
-            0xC000: self.op_cxkk,
-            0xD000: self.op_dxyn,
-            0xE000: self.op_exxx,
-            0xF000: self.op_fxxx
-        }
 
+    # Cycle
     def cycle(self):
-        # Fetch 2-byte opcode (CHIP8 opcodes are 2 bytes)
+        # Fetch opcode
         self.opcode = (self.memory[self.pc] << 8) | self.memory[self.pc + 1]
 
-        # Extract Vx and Vy for easy use
-        self.vx = (self.opcode & 0x0F00) >> 8
-        self.vy = (self.opcode & 0x00F0) >> 4
+        # Extract registers
+        self.vx = (self.opcode & 0x0f00) >> 8
+        self.vy = (self.opcode & 0x00f0) >> 4
 
-        # Move PC ahead (will be adjusted if jump/call)
+        # Special case for 0x0XXX
+        if (self.opcode & 0xF000) == 0x0000:
+            extracted_op = self.opcode & 0xF0FF
+            try:
+                self.funcmap[extracted_op]()
+            except KeyError:
+                print("Unknown instruction: %04X" % self.opcode)
+        else:
+            extracted_op = self.opcode & 0xF000
+            try:
+                self.funcmap[extracted_op]()
+            except KeyError:
+                print("Unknown instruction: %04X" % self.opcode)
+
+        # Default increment
         self.pc += 2
 
-        # Extract first nibble to determine instruction
-        extracted_op = self.opcode & 0xF000
-        try:
-            self.funcmap[extracted_op]()  # call mapped method
-        except KeyError:
-            print("Unknown instruction: %04X" % self.opcode)
-
-        # Decrement timers
+        # Timers
         if self.delay_timer > 0:
             self.delay_timer -= 1
         if self.sound_timer > 0:
             self.sound_timer -= 1
             if self.sound_timer == 0:
-                # Play a sound using pyglet here
-                log("sound plays")
+                log("Sound plays!")
 
-#opcode handlers (Not confident that any or all of this is done correctly btw)
+        # Opcode Handlers
+def setup_funcmap(self):
+    # Maps the first nibble or pattern of each opcode to a handler function
+    self.funcmap = {
+        0x0000: self._0xxx,    # 0nnn / 00E0 / 00EE - SYS call (ignored), clear screen, return from subroutine
+        0x1000: self._1nnn,    # 1nnn - Jump to a specific memory address
+        0x2000: self._2nnn,    # 2nnn - Call a function (subroutine) at a memory address
+        0x3000: self._3xkk,    # 3xkk - Skip next instruction if a register equals a specific number
+        0x4000: self._4xkk,    # 4xkk - Skip next instruction if a register does NOT equal a number
+        0x5000: self._5xy0,    # 5xy0 - Skip next instruction if two registers are equal
+        0x6000: self._6xkk,    # 6xkk - Set a register to a specific number
+        0x7000: self._7xkk,    # 7xkk - Add a number to a register
+        0x8000: self._8xxx,    # 8xy0..8xyE - Math and logic operations between two registers
+        0x9000: self._9xy0,    # 9xy0 - Skip next instruction if two registers are NOT equal
+        0xA000: self._Annn,    # Annn - Set a special memory pointer (I) to a specific address
+        0xB000: self._Bnnn,    # Bnnn - Jump to an address plus the value of register V0
+        0xC000: self._Cxkk,    # Cxkk - Set a register to a random number ANDed with a value
+        0xD000: self._Dxyn,    # Dxyn - Draw a small image (sprite) on the screen at X,Y coordinates
+        0xE000: self._Exxx,    # Ex9E / ExA1 - Skip next instruction if a key is pressed or not pressed
+        0xF000: self._Fxxx,    # Fx07..Fx65 - Timers, memory storage, and waiting for keys
+    }
 
-def op_0xxx(self):
-    if self.opcode == 0x00E0:
-        self.display_buffer = [0]*64*32
+# 0nnn / 00E0 / 00EE - SYS / Clear Screen / Return from Subroutine
+def _0xxx(self):
+    if self.opcode == 0x00E0:  # 00E0 - Clear screen
+        self.display_buffer = [0] * (64 * 32)
         self.should_draw = True
-        log("Clear screen: all pixels set to 0")
-    elif self.opcode == 0x00EE:
+        log("Clear the display (all pixels turned off)")
+    elif self.opcode == 0x00EE:  # 00EE - Return from subroutine
         self.pc = self.stack.pop()
-        log(f"Return from subroutine: PC set to {self.pc} (from stack)")
-    else:
-        log(f"Ignored unknown 0x0??? opcode: {self.opcode:04X}")
+        log("Return from subroutine (go back to the instruction after the CALL)")
+    else:  # 0nnn - SYS call (ignored)
+        addr = self.opcode & 0x0FFF
+        log(f"SYS call to {addr:03X} ignored (old instruction, does nothing)")
 
-def op_1nnn(self):
-    addr = self.opcode & 0x0FFF
-    self.pc = addr
-    log(f"Jumping to address {addr} (decimal) / {addr:03X} (hex)")
+# 1nnn - Jump to address
+def _1nnn(self):
+    self.pc = self.opcode & 0x0FFF
+    log(f"Jump to memory address {self.pc:03X}")
 
-def op_2nnn(self):
-    addr = self.opcode & 0x0FFF
+# 2nnn - Call subroutine
+def _2nnn(self):
     self.stack.append(self.pc)
-    self.pc = addr
-    log(f"Calling subroutine at {addr} (decimal) / {addr:03X} (hex), return address pushed to stack")
+    self.pc = self.opcode & 0x0FFF
+    log(f"Call subroutine at address {self.pc:03X} (save return address on stack)")
 
-def op_3xkk(self):
+# 3xkk - Skip next instruction if register equals a number
+def _3xkk(self):
     kk = self.opcode & 0x00FF
     if self.gpio[self.vx] == kk:
         self.pc += 2
-        log(f"Skipping next instruction because V{self.vx} ({self.gpio[self.vx]}) == {kk}")
-    else:
-        log(f"Not skipping: V{self.vx} ({self.gpio[self.vx]}) != {kk}")
+        log(f"Skip next instruction: V{self.vx} == {kk}")
 
-def op_4xkk(self):
+# 4xkk - Skip next instruction if register does NOT equal a number
+def _4xkk(self):
     kk = self.opcode & 0x00FF
     if self.gpio[self.vx] != kk:
         self.pc += 2
-        log(f"Skipping next instruction because V{self.vx} ({self.gpio[self.vx]}) != {kk}")
-    else:
-        log(f"Not skipping: V{self.vx} ({self.gpio[self.vx]}) == {kk}")
+        log(f"Skip next instruction: V{self.vx} != {kk}")
 
-def op_5xy0(self):
+# 5xy0 - Skip next instruction if two registers are equal
+def _5xy0(self):
     if self.gpio[self.vx] == self.gpio[self.vy]:
         self.pc += 2
-        log(f"Skipping next instruction because V{self.vx} ({self.gpio[self.vx]}) == V{self.vy} ({self.gpio[self.vy]})")
-    else:
-        log(f"Not skipping: V{self.vx} ({self.gpio[self.vx]}) != V{self.vy} ({self.gpio[self.vy]})")
+        log(f"Skip next instruction: V{self.vx} == V{self.vy}")
 
-def op_6xkk(self):
+# 6xkk - Set a register to a specific number
+def _6xkk(self):
     kk = self.opcode & 0x00FF
     self.gpio[self.vx] = kk
-    log(f"Set V{self.vx} to {kk} (decimal) / {kk:02X} (hex)")
+    log(f"Set V{self.vx} = {kk}")
 
-def op_7xkk(self):
+# 7xkk - Add a number to a register
+def _7xkk(self):
     kk = self.opcode & 0x00FF
     old_val = self.gpio[self.vx]
-    self.gpio[self.vx] = (self.gpio[self.vx] + kk) & 0xFF
-    log(f"Added {kk} to V{self.vx}: {old_val} + {kk} = {self.gpio[self.vx]} (decimal) / {self.gpio[self.vx]:02X} (hex)")
+    self.gpio[self.vx] = (old_val + kk) & 0xFF
+    log(f"Add {kk} to V{self.vx}: {old_val} + {kk} -> {self.gpio[self.vx]}")
 
-def op_8xyx(self):
+# 8xy0..8xyE - Math and logic operations between two registers
+def _8xxx(self):
+    x, y = self.vx, self.vy
     subcode = self.opcode & 0x000F
-    x = self.vx
-    y = self.vy
-
-    if subcode == 0x0:  # LD Vx, Vy
+    if subcode == 0x0:   # LD Vx, Vy
         self.gpio[x] = self.gpio[y]
-        log(f"Set V{x} = V{y} ({self.gpio[y]})")
-    elif subcode == 0x1:  # OR
+        log(f"Copy value of V{y} ({self.gpio[y]}) into V{x}")
+    elif subcode == 0x1: # OR Vx, Vy
         self.gpio[x] |= self.gpio[y]
-        log(f"V{x} = V{x} | V{y} ({self.gpio[x]})")
-    elif subcode == 0x2:  # AND
+        log(f"V{x} = V{x} OR V{y} -> {self.gpio[x]}")
+    elif subcode == 0x2: # AND Vx, Vy
         self.gpio[x] &= self.gpio[y]
-        log(f"V{x} = V{x} & V{y} ({self.gpio[x]})")
-    elif subcode == 0x3:  # XOR
+        log(f"V{x} = V{x} AND V{y} -> {self.gpio[x]}")
+    elif subcode == 0x3: # XOR Vx, Vy
         self.gpio[x] ^= self.gpio[y]
-        log(f"V{x} = V{x} ^ V{y} ({self.gpio[x]})")
-    elif subcode == 0x4:  # ADD Vx, Vy with carry
+        log(f"V{x} = V{x} XOR V{y} -> {self.gpio[x]}")
+    elif subcode == 0x4: # ADD Vx, Vy
         res = self.gpio[x] + self.gpio[y]
         self.gpio[0xF] = 1 if res > 0xFF else 0
         self.gpio[x] = res & 0xFF
-        log(f"V{x} = V{x} + V{y} ({self.gpio[x]}), carry={self.gpio[0xF]}")
-    elif subcode == 0x5:  # SUB Vx, Vy
+        log(f"Add V{y} to V{x}: result {self.gpio[x]}, carry={self.gpio[0xF]}")
+    elif subcode == 0x5: # SUB Vx, Vy
         self.gpio[0xF] = 1 if self.gpio[x] > self.gpio[y] else 0
         self.gpio[x] = (self.gpio[x] - self.gpio[y]) & 0xFF
-        log(f"V{x} = V{x} - V{y} ({self.gpio[x]}), borrow flag={self.gpio[0xF]}")
-    elif subcode == 0x6:  # SHR Vx
-        self.gpio[0xF] = self.gpio[x] & 0x1
+        log(f"Subtract V{y} from V{x}: result {self.gpio[x]}, NOT borrow={self.gpio[0xF]}")
+    elif subcode == 0x6: # SHR Vx
+        self.gpio[0xF] = self.gpio[x] & 1
         self.gpio[x] >>= 1
-        log(f"V{x} shifted right by 1, LSB stored in VF={self.gpio[0xF]}")
-    elif subcode == 0x7:  # SUBN Vx, Vy
+        log(f"Shift V{x} right by 1: {self.gpio[x]}, least significant bit={self.gpio[0xF]}")
+    elif subcode == 0x7: # SUBN Vx, Vy
         self.gpio[0xF] = 1 if self.gpio[y] > self.gpio[x] else 0
         self.gpio[x] = (self.gpio[y] - self.gpio[x]) & 0xFF
-        log(f"V{x} = V{y} - V{x} ({self.gpio[x]}), borrow flag={self.gpio[0xF]}")
-    elif subcode == 0xE:  # SHL Vx
-        self.gpio[0xF] = (self.gpio[x] >> 7) & 0x1
+        log(f"Set V{x} = V{y} - V{x}: result {self.gpio[x]}, NOT borrow={self.gpio[0xF]}")
+    elif subcode == 0xE: # SHL Vx
+        self.gpio[0xF] = (self.gpio[x] >> 7) & 1
         self.gpio[x] = (self.gpio[x] << 1) & 0xFF
-        log(f"V{x} shifted left by 1, MSB stored in VF={self.gpio[0xF]}")
-    else:
-        log(f"Unknown 8XY? opcode: {self.opcode:04X}")
+        log(f"Shift V{x} left by 1: {self.gpio[x]}, most significant bit={self.gpio[0xF]}")
 
-def op_9xy0(self):
+# 9xy0 - Skip next instruction if registers are not equal
+def _9xy0(self):
     if self.gpio[self.vx] != self.gpio[self.vy]:
         self.pc += 2
-        log(f"Skipping next instruction because V{self.vx} ({self.gpio[self.vx]}) != V{self.vy} ({self.gpio[self.vy]})")
-    else:
-        log(f"Not skipping: V{self.vx} ({self.gpio[self.vx]}) == V{self.vy} ({self.gpio[self.vy]})")
+        log(f"Skip next instruction: V{self.vx} != V{self.vy}")
 
-def op_annn(self):
+# Annn - Set I to a memory address
+def _Annn(self):
     self.index = self.opcode & 0x0FFF
-    log(f"Set index register I = {self.index} (decimal) / {self.index:03X} (hex)")
+    log(f"Set memory pointer I = {self.index:03X}")
 
-def op_bnnn(self):
+# Bnnn - Jump to address plus V0
+def _Bnnn(self):
     addr = self.opcode & 0x0FFF
     self.pc = addr + self.gpio[0]
-    log(f"Jumping to V0 + {addr} = {self.pc} (decimal) / {self.pc:03X} (hex)")
+    log(f"Jump to address V0 + {addr:03X} = {self.pc:03X}")
 
-def op_cxkk(self):
-    import random
+# Cxkk - Set Vx to random number ANDed with value
+def _Cxkk(self):
     kk = self.opcode & 0x00FF
     val = random.randint(0, 255) & kk
     self.gpio[self.vx] = val
-    log(f"Set V{self.vx} = random_byte & {kk} = {val}")
+    log(f"Set V{self.vx} = random_byte & {kk} -> {val}")
 
-def op_dxyn(self):
+# Dxyn - Draw sprite at coordinates Vx,Vy
+def _Dxyn(self):
     x_coord = self.gpio[self.vx]
     y_coord = self.gpio[self.vy]
     height = self.opcode & 0x000F
     self.gpio[0xF] = 0
-
     for row in range(height):
         sprite_byte = self.memory[self.index + row]
         for col in range(8):
-            sprite_pixel = (sprite_byte >> (7 - col)) & 1
+            pixel = (sprite_byte >> (7 - col)) & 1
             idx = ((x_coord + col) % 64) + ((y_coord + row) % 32) * 64
-            if sprite_pixel:
+            if pixel:
                 if self.display_buffer[idx] == 1:
-                    self.gpio[0xF] = 1
+                    self.gpio[0xF] = 1  # collision flag
                 self.display_buffer[idx] ^= 1
-
     self.should_draw = True
-    log(f"Drew sprite at (V{self.vx}={x_coord}, V{self.vy}={y_coord}), height={height}, VF={self.gpio[0xF]}")
+    log(f"Drew sprite at ({x_coord},{y_coord}), height={height}, collision={self.gpio[0xF]}")
 
-def op_exxx(self):
-    kk = self.opcode & 0x00FF
+# Ex9E / ExA1 - Skip next instruction if key pressed / not pressed
+def _Exxx(self):
+    last_byte = self.opcode & 0x00FF
     key = self.gpio[self.vx]
-    if kk == 0x9E:  # SKP Vx
+    if last_byte == 0x9E:  # SKP Vx
         if self.key_inputs[key]:
             self.pc += 2
-        log(f"Skip next if key {key} is pressed: key state={self.key_inputs[key]}")
-    elif kk == 0xA1:  # SKNP Vx
+            log(f"Skip next instruction: key {key} is pressed")
+    elif last_byte == 0xA1:  # SKNP Vx
         if not self.key_inputs[key]:
             self.pc += 2
-        log(f"Skip next if key {key} is NOT pressed: key state={self.key_inputs[key]}")
+            log(f"Skip next instruction: key {key} is NOT pressed")
 
-def op_fxxx(self):
-    kk = self.opcode & 0x00FF
+# Fx07..Fx65 - Timers, memory, and input
+def _Fxxx(self):
+    last_byte = self.opcode & 0x00FF
     x = self.vx
-
-    if kk == 0x07:  # LD Vx, DT
+    if last_byte == 0x07:    # LD Vx, DT
         self.gpio[x] = self.delay_timer
-        log(f"Set V{x} = delay_timer ({self.delay_timer})")
-    elif kk == 0x0A:  # LD Vx, K
+        log(f"Set V{x} = delay timer ({self.delay_timer})")
+    elif last_byte == 0x0A:  # LD Vx, K
         pressed = False
         for i, state in enumerate(self.key_inputs):
             if state:
@@ -285,32 +292,35 @@ def op_fxxx(self):
                 pressed = True
                 break
         if not pressed:
-            self.pc -= 2  # repeat instruction
-        log(f"Wait for key press, store in V{x}: {self.gpio[x] if pressed else 'waiting'}")
-    elif kk == 0x15:  # LD DT, Vx
+            self.pc -= 2
+        log(f"Wait for key press -> V{x}: {self.gpio[x] if pressed else 'waiting'}")
+    elif last_byte == 0x15:  # LD DT, Vx
         self.delay_timer = self.gpio[x]
-        log(f"Set delay_timer = V{x} ({self.gpio[x]})")
-    elif kk == 0x18:  # LD ST, Vx
+        log(f"Set delay timer = V{x} ({self.gpio[x]})")
+    elif last_byte == 0x18:  # LD ST, Vx
         self.sound_timer = self.gpio[x]
-        log(f"Set sound_timer = V{x} ({self.gpio[x]})")
-    elif kk == 0x1E:  # ADD I, Vx
+        log(f"Set sound timer = V{x} ({self.gpio[x]})")
+    elif last_byte == 0x1E:  # ADD I, Vx
         old_index = self.index
         self.index = (self.index + self.gpio[x]) & 0xFFFF
-        log(f"Add V{x} ({self.gpio[x]}) to I: {old_index} -> {self.index}")
-    elif kk == 0x29:  # LD F, Vx
+        log(f"Increment I by V{x}: {old_index} -> {self.index}")
+    elif last_byte == 0x29:  # LD F, Vx
         self.index = self.gpio[x] * 5
-        log(f"Set I to sprite location for digit V{x} ({self.gpio[x]}) -> I={self.index}")
-    elif kk == 0x33:  # LD B, Vx
+        log(f"Set I to the memory location of sprite for digit V{x} ({self.gpio[x]})")
+    elif last_byte == 0x33:  # LD B, Vx
         val = self.gpio[x]
         self.memory[self.index] = val // 100
         self.memory[self.index + 1] = (val // 10) % 10
         self.memory[self.index + 2] = val % 10
-        log(f"Store BCD of V{x} ({val}) at memory I ({self.index})")
-    elif kk == 0x55:  # LD [I], V0..Vx
+        log(f"Store BCD of V{x} ({val}) at I, I+1, I+2")
+    elif last_byte == 0x55:  # LD [I], Vx
         for i in range(x + 1):
             self.memory[self.index + i] = self.gpio[i]
-        log(f"Store V0..V{x} into memory starting at I ({self.index})")
-    elif kk == 0x65:  # LD V0..Vx, [I]
+        log(f"Store registers V0..V{x} in memory starting at I")
+    elif last_byte == 0x65:  # LD Vx, [I]
         for i in range(x + 1):
             self.gpio[i] = self.memory[self.index + i]
-        log(f"Load V0..V{x} from memory starting at I ({self.index})")
+        log(f"Load registers V0..V{x} from memory starting at I")
+
+
+
