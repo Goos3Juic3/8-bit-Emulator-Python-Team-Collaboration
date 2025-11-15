@@ -67,10 +67,6 @@ class cpu(pyglet.window.Window):
             self.memory[i + 0x200] = ord(binary[i])
             i += 1
 
-
-
-    #Create a dictionary that maps opcode prefixes to methods.
-
     # Cycle
     def cycle(self):
         # Fetch opcode
@@ -321,3 +317,4 @@ class cpu(pyglet.window.Window):
             for i in range(x + 1):
                 self.gpio[i] = self.memory[self.index + i]
             log(f"Load registers V0..V{x} from memory starting at I")
+
