@@ -112,18 +112,49 @@ class Chip8(pyglet.window.Window):
 
         pyglet.clock.schedule_interval(self.tick, 1 / CPU_HZ)       # CPU cycles
         pyglet.clock.schedule_interval(self.draw_frame, 1 / 60.0)   # Screen redraw
-        pyglet.clock.schedule_interval(self._update_fps, 1.0)
-        pyglet.clock.schedule_interval(self._update_cps, 1.0)
         pyglet.clock.schedule_interval(self._timer_tick, 1 / TIMER_HZ)
+        # Performance tracking
+        self._fps_counter = 0          # counts frames drawn in current second
+        self._cps_counter = 0          # counts CPU cycles in current second
+        self._bench_time = pyglet.clock.get_default().time()  # start time reference
+
+        # Labels for HUD
+        self.fps_label = pyglet.text.Label(
+            "FPS: 0",
+            font_size=12,
+            x=5,
+            y=WINDOW_HEIGHT - 15,
+            anchor_x='left',
+            anchor_y='center',
+            color=(255, 255, 255, 255)
+        )
+        self.cps_label = pyglet.text.Label(
+            "Cycles/s: 0",
+            font_size=12,
+            x=5,
+            y=WINDOW_HEIGHT - 30,
+            anchor_x='left',
+            anchor_y='center',
+            color=(255, 255, 255, 255)
+        )
+        pyglet.clock.schedule_interval(self._update_bench, 1.0)  # update FPS/CPS every second
 
     # ---- FPS / CPS ----
-    def _update_fps(self, dt):
-        self.fps = 1.0 / dt
-        self.fps_label.text = f"FPS: {self.fps:.3f}"
+    def _update_bench(self, dt):
+        """
+        Update FPS and CPS once per second.
+        """
+        now = pyglet.clock.get_default().time()
+        elapsed = now - self._bench_time
+        if elapsed >= 1.0:
+            # Update FPS and CPS labels
+            self.fps_label.text = f"FPS: {self._fps_counter / elapsed:.1f}"
+            self.cps_label.text = f"Cycles/s: {self._cps_counter}"
 
-    def _update_cps(self, dt):
-        self.cycles_per_second = self.cycle_count
-        self.cycle_count = 0
+            # Reset counters for next second
+            self._fps_counter = 0
+            self._cps_counter = 0
+            self._bench_time = now
 
     # ---- Draw loop (60 FPS) ----
     def draw_frame(self, dt):
@@ -132,8 +163,7 @@ class Chip8(pyglet.window.Window):
 
     # ---- CPU (runs at CPU_HZ) ----
     def tick(self, dt):
-        self.cycle_count += 1
-
+        self._cps_counter += 1       # increment cycles-per-second counter
         opcode = self.memory[self.pc] << 8 | self.memory[self.pc + 1]
         self.pc += 2
 
@@ -265,27 +295,29 @@ class Chip8(pyglet.window.Window):
 
     # Draw (only when needed)
     def on_draw(self):
-        if not self.should_draw: return
+        """
+        Draw the CHIP-8 framebuffer and HUD. Called at render rate (~60Hz).
+        """
+        if not self.should_draw:
+            return
+
         self.clear()
-        for i in range(64*32):
+
+        # Draw pixels
+        for i in range(64 * 32):
             if self.vram[i]:
                 x = (i % 64) * SCALE
                 y = (31 - (i // 64)) * SCALE
                 self.pixel.blit(x, y)
-        self.should_draw = False
 
         # Draw FPS and CPS
         self.fps_label.draw()
-        cps_label = pyglet.text.Label(
-            f"Cycles/s: {self.cycles_per_second}",
-            font_size=12,
-            x=5,
-            y=WINDOW_HEIGHT - 30,
-            anchor_x='left',
-            anchor_y='center',
-            color=(255, 255, 255, 255)
-        )
-        cps_label.draw()
+        self.cps_label.draw()
+
+        self.should_draw = False
+
+        # Increment FPS counter
+        self._fps_counter += 1
 
     # Keyboard
     def on_key_press(self, symbol, modifiers):
