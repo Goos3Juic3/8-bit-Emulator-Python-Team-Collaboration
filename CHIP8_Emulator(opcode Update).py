@@ -388,7 +388,7 @@ class Chip8(pyglet.window.Window):
         x = (opcode >> 8) & 0xF
         self.V[:x + 1] = self.memory[self.I:self.I + x + 1]
 
-    # cup tick(replaced)
+    # cpu tick(replaced)
     def tick(self, dt):
         self._cps_counter += 1
 
@@ -472,3 +472,4 @@ if __name__ == "__main__":
 
     window = Chip8(sys.argv[1])
     pyglet.app.run()
+
