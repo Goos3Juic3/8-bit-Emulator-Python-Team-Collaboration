@@ -1,0 +1,389 @@
+# CHIP8 Virtual Machine Steps:
+# Input - store key input states and check these per cycle.
+# Output - 64x32 display(array of pixels are either in the on or off state(0 || 1)) & sound buzzer.
+# CPU - Cogwoods CHIP8 Technical reference http://devernay.free.fr/hacks/chip8/C8TECH10.HTM#0.0
+# Memory - can hold up to 4096 bytes which includes: the interpreter, fonts, and inputted ROM.
+#----------------------------------------------------------------------------------------------
+# We will be storing register values as 16 zeros. Also, we will have two time registers
+# defined by two variables that we decrement per cycle. We will also be dealing with a
+# stack of 16 elements that we'll just need to make into a list.
+#----------------------------------------------------------------------------------------------
+# We're going to be subclassing pyglet (that'll handle graphics, sound output, and keyboard handling)
+# and Overriding whatever def we need from there.
+
+import sys
+import pyglet
+from pyglet.window import key
+import random
+from pyglet.media import synthesis
+
+#map binding keys
+KEYMAP = {
+    key._1: 0x1, key._2: 0x2, key._3: 0x3, key._4: 0xC,
+    key.Q: 0x4, key.W: 0x5, key.E: 0x6, key.R: 0xD,
+    key.A: 0x7, key.S: 0x8, key.D: 0x9, key.F: 0xE,
+    key.Z: 0xA, key.X: 0x0, key.C: 0xB, key.V: 0xF,
+}
+
+# set fonts (binary pixel patterns)
+FONTSET = [
+    0xF0, 0x90, 0x90, 0x90, 0xF0,  # 0
+    0x20, 0x60, 0x20, 0x20, 0x70,  # 1
+    0xF0, 0x10, 0xF0, 0x80, 0xF0,  # 2
+    0xF0, 0x10, 0xF0, 0x10, 0xF0,  # 3
+    0x90, 0x90, 0xF0, 0x10, 0x10,  # 4
+    0xF0, 0x80, 0xF0, 0x10, 0xF0,  # 5
+    0xF0, 0x80, 0xF0, 0x90, 0xF0,  # 6
+    0xF0, 0x10, 0x20, 0x40, 0x40,  # 7
+    0xF0, 0x90, 0xF0, 0x90, 0xF0,  # 8
+    0xF0, 0x90, 0xF0, 0x10, 0xF0,  # 9
+    0xF0, 0x90, 0xF0, 0x90, 0x90,  # A
+    0xE0, 0x90, 0xE0, 0x90, 0xE0,  # B
+    0xF0, 0x80, 0x80, 0x80, 0xF0,  # C
+    0xE0, 0x90, 0x90, 0x90, 0xE0,  # D
+    0xF0, 0x80, 0xF0, 0x80, 0xF0,  # E
+    0xF0, 0x80, 0xF0, 0x80, 0x80   # F
+] #notice 80 bytes
+
+# ---- Configuration ----
+SCALE = 10
+WIDTH, HEIGHT = 64, 37
+WINDOW_WIDTH, WINDOW_HEIGHT = WIDTH * SCALE, HEIGHT * SCALE
+CPU_HZ = 600
+TIMER_HZ = 60
+
+def generate_beep(duration=0.1, frequency=440, sample_rate=44100):
+    wave = synthesis.Sine(duration=duration, frequency=frequency, sample_rate=sample_rate)
+    return pyglet.media.StaticSource(wave)
+
+
+class Chip8(pyglet.window.Window):
+
+    def __init__(self, romname):
+        super().__init__(
+            width=WINDOW_WIDTH,
+            height=WINDOW_HEIGHT,
+            caption="CHIP-8 Emulator",
+            vsync=False          # VSync ON or OFF
+        )
+
+        # CHIP-8 components
+        self.memory = [0] * 4096
+        self.vram = [0] * (WIDTH * HEIGHT)     # framebuffer (replaces "display")
+        self.V = [0] * 16               # registers
+        self.I = 0
+        self.pc = 0x200                 # program counter starts at 0x200
+        self.stack = []
+        self.keys = [0] * 16
+        self.delay = 0
+        self.sound = 0
+        self.should_draw = True
+        self.push_handlers(self) #required for dispatch_event('on_draw')
+
+        # Performance tracking
+        self.cycle_count = 0
+        self.cycles_per_second = 0
+        self.fps = 0.0
+        self.fps_label = pyglet.text.Label(
+            "FPS: 0.000",
+            font_size=12,
+            x=5,
+            y=WINDOW_HEIGHT - 15,
+            anchor_x='left',
+            anchor_y='center',
+            color=(255, 255, 255, 255)
+        )
+
+        # Pixel image
+        self.pixel = pyglet.image.SolidColorImagePattern((255, 255, 255, 255)).create_image(SCALE, SCALE)
+
+        # Load fontset
+        for i in range(80):
+            self.memory[i] = FONTSET[i]
+
+        # Load ROM
+        print("Loading ROM:", romname)
+        rom = open(romname, "rb").read()
+        for i, b in enumerate(rom):
+            self.memory[0x200 + i] = b
+
+        # Beep sound
+        self.sound_playing = False
+
+        pyglet.clock.schedule_interval(self.tick, 1 / CPU_HZ)       # CPU cycles
+        pyglet.clock.schedule_interval(self.draw_frame, 1 / 60.0)   # Screen redraw
+        pyglet.clock.schedule_interval(self._timer_tick, 1 / TIMER_HZ)
+
+        # Performance tracking
+        self._fps_counter = 0          # counts frames drawn in current second
+        self._cps_counter = 0          # counts CPU cycles in current second
+        self._bench_time = pyglet.clock.get_default().time()  # start time reference
+
+        # Labels for HUD
+        self.fps_label = pyglet.text.Label(
+            "FPS: 0",
+            font_size=12,
+            x=5,
+            y=WINDOW_HEIGHT - 15,
+            anchor_x='left',
+            anchor_y='center',
+            color=(255, 255, 255, 255)
+        )
+        self.cps_label = pyglet.text.Label(
+            "Cycles/s: 0",
+            font_size=12,
+            x=5,
+            y=WINDOW_HEIGHT - 30,
+            anchor_x='left',
+            anchor_y='center',
+            color=(255, 255, 255, 255)
+        )
+
+        # Placeholder for control labels
+        self.control_labels = []
+
+        pyglet.clock.schedule_interval(self._update_bench, 1.0)  # update FPS/CPS every second
+
+    # Control scheme for each game
+    def set_controls(self, game_name):
+        """Sets the on-screen controls based on the game."""
+        x_pos = WINDOW_WIDTH - 150  # adjust horizontal position to the right side
+        if game_name.lower() == "pong":
+            self.control_labels = [
+                pyglet.text.Label("PONG CONTROLS:", font_size=12, x=x_pos, y=WINDOW_HEIGHT - 45, anchor_x='left', anchor_y='center', color=(255,255,255,255)),
+                pyglet.text.Label("Player 1: 1 / Q", font_size=12, x=x_pos, y=WINDOW_HEIGHT - 60, anchor_x='left', anchor_y='center', color=(255,255,255,255)),
+                pyglet.text.Label("Player 2: 4 / R", font_size=12, x=x_pos, y=WINDOW_HEIGHT - 75, anchor_x='left', anchor_y='center', color=(255,255,255,255)),
+            ]
+        elif game_name.lower() == "tank":
+            self.control_labels = [
+                pyglet.text.Label("TANK CONTROLS:", font_size=12, x=x_pos, y=WINDOW_HEIGHT - 45, anchor_x='left', anchor_y='center', color=(255,255,255,255)),
+                pyglet.text.Label("Up: S", font_size=12, x=x_pos, y=WINDOW_HEIGHT - 60, anchor_x='left', anchor_y='center', color=(255,255,255,255)),
+                pyglet.text.Label("Down: 2", font_size=12, x=x_pos, y=WINDOW_HEIGHT - 75, anchor_x='left', anchor_y='center', color=(255,255,255,255)),
+                pyglet.text.Label("Left: Q", font_size=12, x=x_pos, y=WINDOW_HEIGHT - 90, anchor_x='left', anchor_y='center', color=(255,255,255,255)),
+                pyglet.text.Label("Right: E", font_size=12, x=x_pos, y=WINDOW_HEIGHT - 105, anchor_x='left', anchor_y='center', color=(255,255,255,255)),
+            ]
+        else:
+            self.control_labels = [
+                pyglet.text.Label("Controls: Unknown", font_size=12, x=x_pos, y=WINDOW_HEIGHT - 45, anchor_x='left', anchor_y='center', color=(255,255,255,255))
+            ]
+
+    # ---- FPS / CPS ----
+    def _update_bench(self, dt):
+        """
+        Update FPS and CPS once per second.
+        """
+        now = pyglet.clock.get_default().time()
+        elapsed = now - self._bench_time
+        if elapsed >= 1.0:
+            # Update FPS and CPS labels
+            self.fps_label.text = f"FPS: {self._fps_counter / elapsed:.1f}"
+            self.cps_label.text = f"Cycles/s: {self._cps_counter}"
+
+            # Reset counters for next second
+            self._fps_counter = 0
+            self._cps_counter = 0
+            self._bench_time = now
+
+    # ---- Draw loop (60 FPS) ----
+    def draw_frame(self, dt):
+        if self.should_draw:
+            self.dispatch_event('on_draw')
+
+    # ---- CPU (runs at CPU_HZ) ----
+    def tick(self, dt):
+        self._cps_counter += 1       # increment cycles-per-second counter
+        opcode = self.memory[self.pc] << 8 | self.memory[self.pc + 1]
+        self.pc += 2
+
+        nnn = opcode & 0x0FFF
+        n = opcode & 0x000F
+        x = (opcode >> 8) & 0xF
+        y = (opcode >> 4) & 0xF
+        kk = opcode & 0xFF
+
+        # ---- Opcode implementations (same as original first script) ----
+        if opcode == 0x00E0:           # CLS
+            self.vram = [0] * (WIDTH * HEIGHT)
+            self.should_draw = True
+
+        elif opcode == 0x00EE:         # RET
+            self.pc = self.stack.pop()
+
+        elif opcode & 0xF000 == 0x1000:  # JP
+            self.pc = nnn
+
+        elif opcode & 0xF000 == 0x2000:  # CALL
+            self.stack.append(self.pc)
+            self.pc = nnn
+
+        elif opcode & 0xF000 == 0x3000:  # SE Vx, byte
+            if self.V[x] == kk: self.pc += 2
+        elif opcode & 0xF000 == 0x4000:  # SNE Vx, byte
+            if self.V[x] != kk: self.pc += 2
+        elif opcode & 0xF00F == 0x5000:  # SE Vx, Vy
+            if self.V[x] == self.V[y]: self.pc += 2
+        elif opcode & 0xF000 == 0x6000:  # LD Vx, byte
+            self.V[x] = kk
+        elif opcode & 0xF000 == 0x7000:  # ADD Vx, byte
+            self.V[x] = (self.V[x] + kk) & 0xFF
+        elif opcode & 0xF00F == 0x8000:  # LD Vx, Vy
+            self.V[x] = self.V[y]
+        elif opcode & 0xF00F == 0x8001:  # OR
+            self.V[x] |= self.V[y]
+        elif opcode & 0xF00F == 0x8002:  # AND
+            self.V[x] &= self.V[y]
+        elif opcode & 0xF00F == 0x8003:  # XOR
+            self.V[x] ^= self.V[y]
+        elif opcode & 0xF00F == 0x8004:  # ADD + carry
+            total = self.V[x] + self.V[y]
+            self.V[0xF] = 1 if total > 0xFF else 0
+            self.V[x] = total & 0xFF
+        elif opcode & 0xF00F == 0x8005:  # SUB
+            self.V[0xF] = 1 if self.V[x] > self.V[y] else 0
+            self.V[x] = (self.V[x] - self.V[y]) & 0xFF
+        elif opcode & 0xF00F == 0x8006:  # SHR
+            self.V[0xF] = self.V[x] & 1
+            self.V[x] >>= 1
+        elif opcode & 0xF00F == 0x8007:  # SUBN
+            self.V[0xF] = 1 if self.V[y] > self.V[x] else 0
+            self.V[x] = (self.V[y] - self.V[x]) & 0xFF
+        elif opcode & 0xF00F == 0x800E:  # SHL
+            self.V[0xF] = (self.V[x] >> 7) & 1
+            self.V[x] = (self.V[x] << 1) & 0xFF
+        elif opcode & 0xF00F == 0x9000:  # SNE Vx, Vy
+            if self.V[x] != self.V[y]: self.pc += 2
+        elif opcode & 0xF000 == 0xA000:  # LD I, addr
+            self.I = nnn
+        elif opcode & 0xF000 == 0xD000:  # DRW Vx, Vy, n
+            px = self.V[x]
+            py = self.V[y]
+            self.V[0xF] = 0
+            for row in range(n):
+                sprite = self.memory[self.I + row]
+                for bit in range(8):
+                    if sprite & (0x80 >> bit):
+                        vx = (px + bit) % 64
+                        vy = (py + row) % 32
+                        index = vx + vy * 64
+                        if self.vram[index] == 1: self.V[0xF] = 1
+                        self.vram[index] ^= 1
+            self.should_draw = True
+        elif opcode & 0xF0FF == 0xE09E:  # SKP
+            if self.keys[self.V[x]]: self.pc += 2
+        elif opcode & 0xF0FF == 0xE0A1:  # SKNP
+            if not self.keys[self.V[x]]: self.pc += 2
+        elif opcode & 0xF0FF == 0xF007:  # LD Vx, DT
+            self.V[x] = self.delay
+        elif opcode & 0xF0FF == 0xF00A:  # WAIT KEY
+            for i in range(16):
+                if self.keys[i]:
+                    self.V[x] = i
+                    return
+            self.pc -= 2
+        elif opcode & 0xF0FF == 0xF015:  # LD DT, Vx
+            self.delay = self.V[x]
+        elif opcode & 0xF0FF == 0xF018:  # LD ST, Vx (sound)
+            self.sound = self.V[x]
+        elif opcode & 0xF0FF == 0xF01E:  # ADD I, Vx
+            self.I = (self.I + self.V[x]) & 0xFFF
+        elif opcode & 0xF0FF == 0xF029:  # FONT
+            self.I = self.V[x] * 5
+        elif opcode & 0xF0FF == 0xF033:  # BCD
+            v = self.V[x]
+            self.memory[self.I] = v // 100
+            self.memory[self.I + 1] = (v // 10) % 10
+            self.memory[self.I + 2] = v % 10
+        elif opcode & 0xF0FF == 0xF055:  # STORE
+            for i in range(x + 1):
+                self.memory[self.I + i] = self.V[i]
+        elif opcode & 0xF0FF == 0xF065:  # LOAD
+            for i in range(x + 1):
+                self.V[i] = self.memory[self.I + i]
+
+        # ---- timers ----
+        if self.delay > 0: self.delay -= 1
+        if self.sound > 0:
+            self.sound -= 1
+            if not self.sound_playing:
+                self._play_beep()
+        else:
+            self.sound_playing = False
+
+    def _play_beep(self, duration=0.2, frequency=440, pitch_variation=15):
+        freq = frequency + random.randint(-pitch_variation, pitch_variation)
+        wave = synthesis.Sine(duration=duration, frequency=freq, sample_rate=44100)
+        player = pyglet.media.Player()
+        player.queue(wave)
+        player.play()
+        self.sound_playing = True
+        def on_eos():
+            self.sound_playing = False
+            player.delete()
+        player.on_eos = on_eos
+
+    # Draw (only when needed)
+    def on_draw(self):
+        """
+        Draw the CHIP-8 framebuffer and HUD. Called at render rate (~60Hz).
+        """
+        if not self.should_draw:
+            return
+
+        self.clear()
+
+        # Draw pixels
+        for i in range(64 * 32):
+            if self.vram[i]:
+                x = (i % 64) * SCALE
+                y = (31 - (i // 64)) * SCALE
+                self.pixel.blit(x, y)
+
+        # Draw FPS and CPS
+        self.fps_label.draw()
+        self.cps_label.draw()
+
+        # Draw control labels
+        for label in self.control_labels:
+            label.draw()
+
+        self.should_draw = False
+
+        # Increment FPS counter
+        self._fps_counter += 1
+
+    # Keyboard
+    def on_key_press(self, symbol, modifiers):
+        if symbol in KEYMAP:
+            self.keys[KEYMAP[symbol]] = 1
+
+    def on_key_release(self, symbol, modifiers):
+        if symbol in KEYMAP:
+            self.keys[KEYMAP[symbol]] = 0
+
+    def _timer_tick(self, dt):
+        if self.delay > 0: self.delay -= 1
+        if self.sound > 0:
+            self.sound -= 1
+            if not self.sound_playing:
+                self._play_beep()
+        else:
+            self.sound_playing = False
+
+
+#Main
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python chip8_emulator.py romfile")
+        sys.exit(1)
+
+    window = Chip8(sys.argv[1])
+
+    rom_file = sys.argv[1].lower()
+    if "pong" in rom_file:
+        window.set_controls("pong")
+    elif "tank" in rom_file:
+        window.set_controls("tank")
+    else:
+        window.set_controls("unknown")
+
+    pyglet.app.run()
