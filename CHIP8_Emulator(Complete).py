@@ -1,7 +1,7 @@
 # CHIP8 Virtual Machine Steps:
 # Input - store key input states and check these per cycle.
 # Output - 64x32 display(array of pixels are either in the on or off state(0 || 1)) & sound buzzer. 
-# CPU - CowGods CHIP8 Technical reference http://devernay.free.fr/hacks/chip8/C8TECH10.HTM#0.0
+# CPU - Cogwoods CHIP8 Technical reference http://devernay.free.fr/hacks/chip8/C8TECH10.HTM#0.0
 # Memory - can hold up to 4096 bytes which includes: the interpreter, fonts, and inputted ROM.
 #----------------------------------------------------------------------------------------------
 # We will be storing register values as 16 zeros. Also, we will have two time registers 
@@ -525,3 +525,4 @@ if __name__ == "__main__":
 
     window = Chip8(sys.argv[1])
     pyglet.app.run()
+
