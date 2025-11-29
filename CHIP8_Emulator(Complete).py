@@ -300,7 +300,7 @@ class Chip8(pyglet.window.Window):
     def op_ADD_Vx_kk(self, opcode):
         x = (opcode >> 8) & 0xF
         kk = opcode & 0xFF
-        self.V[x] = (self.V[x] + kk) & 0xFF
+        self.V[x] = (int(self.V[x]) + kk) & 0xFF
 
     def op_LD_Vx_Vy(self, opcode):
         x = (opcode >> 8) & 0xF
@@ -525,4 +525,5 @@ if __name__ == "__main__":
 
     window = Chip8(sys.argv[1])
     pyglet.app.run()
+
 
